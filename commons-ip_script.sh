@@ -1,106 +1,112 @@
 #!/usr/bin/env bash
 
+set -euo pipefail
+
 usage() {
-    echo "Usage: $0 ./path/to/source/dir [-m (EAD, WRGSPerson, WRGSArende, WRGSKurs)] [-o ./path/to/output/dir]"
+    echo "Usage: $0 ./path/to/source/dir ./path/to/output/dir"
+    echo "There must be an \".xsd\" file the the source dir and every dir you want to SIP must have an xml file with the same name"
     exit 1
 }
 
-source_dir=$1
-shift
-
-available_metadata_types=("ead" "wrgsperson" "wrgsarende" "wrgskurs")
-# Process options
-while getopts ":m:o:h" option; do
-    case $option in
-        m)
-            metadata_type="${OPTARG,,}"
-            echo $metadata_type
-            # Check if the provided metadata type is valid
-            if [[ ! " ${available_metadata_types[@]} " =~ " $metadata_type " ]]; then
-                echo "Invalid metadata type: $metadata_type"
-                usage
-            fi
-            ;;
-        o)
-            output_dir="$OPTARG"
-            ;;
-        h)
-            echo help
-            usage
-            ;;
-        \?)
-            echo "Invalid option: -$OPTARG"
-            usage
-            ;;
-        :)
-            echo "Option -$OPTARG requires an argument."
-            usage
-            ;;
-    esac
-done
+if [ "$#" -ne 2 ]; then
+    usage
+fi
+VALID_META_TYPES=("ead" "wrgs_person" "wrgs_arende" "wrgs_kurs")
+SOURCE_DIR="$1"
+OUTPUT_DIR="$2"
 
 # Check if source directory exists
-if [ ! -d "$source_dir" ]; then
+if [ ! -d "$SOURCE_DIR" ]; then
     echo "Source directory does not exist."
     usage
 fi
-if [ -z "$output_dir" ]; then
+if [ ! -d "$OUTPUT_DIR" ]; then
     echo "Output directory does not exist."
     usage
 fi
-if [ -z "$metadata_type" ]; then
-    echo "No metadata_type"
-    usage
-fi
 
-metadata_exists=false
-schema_exists=false
-schema=""
+SOURCE_DIR=${SOURCE_DIR%/}
+OUTPUT_DIR=${OUTPUT_DIR%/}
+#
+# Find schema file and set the metadata-file to the same name as the xsd but with xml file ending
 metadata=""
+metadata_scheme=""
+metadata_file=""
 
-echo $source_dir
-for file in "$source_dir"*; do
-    if [[ -d $file ]]; then
-        continue
-    fi
-    if [[ $file == *.xml ]]; then
-        metadata_exists=true
-        metadata=$file
-        echo "found metadata file in source dir: $metadata"
-    fi
+for file in "$SOURCE_DIR"/*; do
     if [[ $file == *.xsd ]]; then
-        schema_exists=true
-        schema=$file
-        echo "found schema file in source dir: $schema"
+        metadata=$(basename "$file")
+        metadata=${metadata%.*}
+        metadata_scheme="$metadata.xsd"
+        metadata_file="$metadata.xml"
     fi
 done
 
-if [[ ! $metadata_exists ]]; then
-    echo "No metadata found in $source_dir"
-    usage
-fi
-if [[ ! $schema_exists ]]; then
-    echo "No schema found in $source_dir"
+if [[ -z $metadata ]]; then
+    echo "No schema file found in $SOURCE_DIR"
     usage
 fi
 
-for sub_dir in "$source_dir"*; do
+# Check if the schema file is one of the VALID_META_TYPES
+valid_scheme=false
+for type in "${VALID_META_TYPES[@]}"; do
+    if [[ "$metadata_scheme" =~ ${type}_[1-9]|[1-9][0-9]\.xsd ]]; then
+        metadata_type="$type"
+        valid_scheme=true
+    fi
+done
+
+if ! $valid_scheme; then
+    echo "No valid schema format found"
+    echo "Available schema formats: ${VALID_META_TYPES[@]}"
+    usage
+fi
+
+echo "proceeding with $metadata_scheme"
+metadata_scheme="$SOURCE_DIR/$metadata_scheme"
+
+# metadata_type=$(grep -oP "targetNamespace=\"\K[^\"]*" $metadata_scheme)
+
+if [[ -z $metadata ]]; then
+    echo "No metadata type found in targetNamespace tag in $metadata_scheme"
+    usage
+fi
+
+if [[ ! $metadata ]]; then
+    echo "No metadata schema found in $SOURCE_DIR"
+    usage
+fi
+
+for sub_dir in "$SOURCE_DIR"/*; do
     if [[ -f $sub_dir ]]; then
         continue
     fi
 
     rep_data=""
+    current_metadata_file=""
     echo -e "\nProcessing directory: $sub_dir"
 
+    if [[ ! -f $sub_dir/$metadata_file ]]; then
+        echo "Directory $sub_dir has $metadata_file file"
+    
+    fi
+
     for file in "$sub_dir"/*; do
-        if [[ "$file" == *metadata.xml ]]; then
+        if [[ "$file" == "$sub_dir/$metadata_file" ]]; then
+            current_metadata_file="$file"
             continue
         else
             rep_data+="--representation-data $file "
         fi
     done
 
-    java -jar ~/Downloads/commons-ip2-cli-2.6.1.jar create --metadata-file $metadata --metadata-version=1 --metadata-type $metadata_type --metadata-schema $schema $rep_data --representation-id rep1 -p $output_dir
+    if [[ -z $current_metadata_file ]]; then
+        echo "No metadata-file in $sub_dir"
+        continue
+    fi
+
+    # echo "java -jar ~/Downloads/commons-ip2-cli-2.6.2.jar create --submitter-name $USER --metadata-file $current_metadata_file --metadata-type $metadata_type --metadata-version=1 --metadata-schema $metadata_scheme $rep_data --representation-id rep1 -p $OUTPUT_DIR"
+    java -jar ~/Downloads/commons-ip2-cli-2.6.2.jar create --submitter-name $USER --metadata-file $current_metadata_file --metadata-type $metadata_type --metadata-version=1 --metadata-schema $metadata_scheme $rep_data --representation-id rep1 -p $OUTPUT_DIR
 done
 
 
